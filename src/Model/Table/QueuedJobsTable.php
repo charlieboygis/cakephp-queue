@@ -155,14 +155,23 @@ class QueuedJobsTable extends Table {
 	 * @return array
 	 */
 	public function getStats() {
+		// PostgreSQL support
+		$isPostgreSQL = ($this->connection()->config()['driver'] == 'Cake\Database\Driver\Postgres');
+
 		$options = [
 			'fields' => function ($query) {
 				return [
 					'job_type',
 					'num' => $query->func()->count('*'),
+					// PostgreSQL support
+					/*
 					'alltime' => $query->func()->avg('UNIX_TIMESTAMP(completed) - UNIX_TIMESTAMP(created)'),
 					'runtime' => $query->func()->avg('UNIX_TIMESTAMP(completed) - UNIX_TIMESTAMP(fetched)'),
 					'fetchdelay' => $query->func()->avg('UNIX_TIMESTAMP(fetched) - IF(notbefore is NULL, UNIX_TIMESTAMP(created), UNIX_TIMESTAMP(notbefore))'),
+					*/
+					'alltime' => $isPostgreSQL ? $query->func()->avg('EXTRACT(EPOCH FROM completed) - EXTRACT(EPOCH FROM created)') : $query->func()->avg('UNIX_TIMESTAMP(completed) - UNIX_TIMESTAMP(created)'),
+					'runtime' => $isPostgreSQL ? $query->func()->avg('EXTRACT(EPOCH FROM completed) - EXTRACT(EPOCH FROM fetched)') : $query->func()->avg('UNIX_TIMESTAMP(completed) - UNIX_TIMESTAMP(fetched)'),
+					'fetchdelay' => $isPostgreSQL ? $query->func()->avg('EXTRACT(EPOCH FROM fetched) - COALESCE(EXTRACT(EPOCH FROM notbefore), EXTRACT(EPOCH from created))') : $query->func()->avg('UNIX_TIMESTAMP(fetched) - IF(notbefore is NULL, UNIX_TIMESTAMP(created), UNIX_TIMESTAMP(notbefore))'),
 				];
 			},
 			'conditions' => [
@@ -186,6 +195,9 @@ class QueuedJobsTable extends Table {
 	public function requestJob(array $capabilities, $group = null) {
 		$now = new Time();
 		$nowStr = $now->toDateTimeString();
+		
+		// PostgreSQL support
+		$isPostgreSQL = ($this->connection()->config()['driver'] == 'Cake\Database\Driver\Postgres');
 
 		$query = $this->find();
 		$options = [
@@ -194,7 +206,9 @@ class QueuedJobsTable extends Table {
 				'OR' => [],
 			],
 			'fields' => [
-				'age' => $query->newExpr()->add('IFNULL(TIMESTAMPDIFF(SECOND, "' . $nowStr . '", notbefore), 0)')
+				// PostgreSQL support
+				//'age' => $query->newExpr()->add('IFNULL(TIMESTAMPDIFF(SECOND, "' . $nowStr . '", notbefore), 0)')
+				'age' => $isPostgreSQL ? $query->newExpr()->add('COALESCE(EXTRACT(EPOCH FROM (\'' . $nowStr . '\'::timestamp - notbefore)), 0)') : $query->newExpr()->add('IFNULL(TIMESTAMPDIFF(SECOND, "' . $nowStr . '", notbefore), 0)')
 			],
 			'order' => [
 				'priority' => 'ASC',
@@ -230,7 +244,10 @@ class QueuedJobsTable extends Table {
 				'failed <' => ($task['retries'] + 1),
 			];
 			if (array_key_exists('rate', $task) && $tmp['job_type'] && array_key_exists($tmp['job_type'], $this->rateHistory)) {
-				$tmp['UNIX_TIMESTAMP() >='] = $this->rateHistory[$tmp['job_type']] + $task['rate'];
+				// PostgreSQL support
+				//$tmp['UNIX_TIMESTAMP() >='] = $this->rateHistory[$tmp['job_type']] + $task['rate'];
+				if ($isPostgreSQL) $tmp['EXTRACT(EPOCH FROM now()) >='] = $this->rateHistory[$tmp['job_type']] + $task['rate'];				
+				else $tmp['UNIX_TIMESTAMP() >='] = $this->rateHistory[$tmp['job_type']] + $task['rate'];
 			}
 			$options['conditions']['OR'][] = $tmp;
 		}
